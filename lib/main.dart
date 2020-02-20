@@ -3,24 +3,12 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:volume/volume.dart';
 import 'package:flutter_blue/flutter_blue.dart';
-import 'package:workmanager/workmanager.dart';
 
 const backgroundTask = "listenForData";
 
-void callbackDispatcher() {
-  Workmanager.executeTask((task, inputData) {
-    if(task == backgroundTask) {
 
-    }
-  });
-}
 
 void main() {
-  Workmanager.initialize(
-      callbackDispatcher, // The top level function, aka callbackDispatcher
-      isInDebugMode: true // If enabled it will post a notification whenever the task is running. Handy for debugging tasks
-  );
-  Workmanager.registerOneOffTask("1", backgroundTask); //Android only (see below)
   runApp(MyApp());
 }
 
@@ -80,37 +68,54 @@ class _MyHomePageState extends State<MyHomePage> {
   BluetoothCharacteristic startStop;
   BluetoothDevice device;
   var dataList = new List<int>();
+  bool isConnection = false;
 
   void _incrementCounter() {
      flutterBlue = FlutterBlue.instance;
     setState((){
+      isConnection = true;
       if(bluetoothRunning) {
         onStop();
       } else {
         bluetoothRunning = true;
-        flutterBlue.scan(timeout: Duration(seconds: 4))
-            .listen((onScanResult));
+        flutterBlue.isOn.then((isOn) {
+          if(isOn) {
+            flutterBlue.scan(timeout: Duration(seconds: 4))
+                .listen((onScanResult)).onDone(() {
+                  if(device == null) {
+                    _noESenseDetected("No eSense device was found. Make sure you turned it on.");
+                  }
+            });
+          } else {
+            _noESenseDetected("Your bluetooth is off please turn it on and try again.");
+          }
+        });
+
       }
     });
   }
 
-  Future<void> _noESenseDetected() async {
+  Future<void> _noESenseDetected(String msg) async {
+    setState(() {
+      bluetoothRunning = false;
+      isConnection = false;
+    });
     return showDialog<void>(
       context: context,
       barrierDismissible: true, // user must tap button!
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Text('No eSense Device Found'),
+          title: Text('No connection'),
           content: SingleChildScrollView(
             child: ListBody(
               children: <Widget>[
-                Text('No eSense bluetooth device was found. Make sure to turn on your headphones and click start again.'),
+                Text(msg),
               ],
             ),
           ),
           actions: <Widget>[
             FlatButton(
-              child: Text('Got it'),
+              child: Text('OK'),
               onPressed: () {
                 Navigator.of(context).pop();
               },
@@ -125,14 +130,17 @@ class _MyHomePageState extends State<MyHomePage> {
     if(device == null) {
       setState(() {
         bluetoothRunning = false;
+        isConnection = false;
       });
       return;
     }
+    flutterBlue.stopScan();
     await startStop.write([0x53, 0x16, 0x02, 0x00, 0x14]);
     motionSenor.setNotifyValue(false);
     device.disconnect().whenComplete((){
       setState((){
         bluetoothRunning = false;
+        isConnection = false;
       });
       startStop = null;
       motionSenor = null;
@@ -187,15 +195,6 @@ class _MyHomePageState extends State<MyHomePage> {
     } else {
       print("Notification already enabled");
     }
-
-    /**
-    imuChar.descriptors.forEach((des) async {
-      if(des.uuid.toString().contains("2902")) { //Notification
-        des.
-        //await des.write([1]);
-        print("Notification Enabled");
-      }
-    });**/
   }
 
   Future<void> startSampling (BluetoothCharacteristic startStop) async {
@@ -212,6 +211,9 @@ class _MyHomePageState extends State<MyHomePage> {
       dataList.add((yGyro));
       print("$yGyro" );
       if(dataList.length > 20) {
+        setState(() {
+          isConnection = false;
+        });
         processData(dataList.getRange(dataList.length - 20, dataList.length - 1));
       }
     }
@@ -230,7 +232,7 @@ class _MyHomePageState extends State<MyHomePage> {
     int sign = left ? 1 : -1;
     int countReset = 0;
     data.forEach((value){
-      if(value* sign > _thresholdValue) {
+      if(value* sign > 4500 - _thresholdValue) {
         count ++;
       }
       if(count >= countThreshold) {
@@ -255,13 +257,47 @@ class _MyHomePageState extends State<MyHomePage> {
 
     Volume.controlVolume(AudioManager.STREAM_MUSIC);
     _currentVol = await Volume.getVol;
-    Volume.setVol(0);
-    new Timer(new Duration(seconds: _sliderValue.toInt()), () {
-      Volume.setVol(_currentVol);
-      setState((){
+    if(_currentVol != 0) {
+      Volume.setVol(0);
+      new Timer(new Duration(seconds: _sliderValue.toInt()), () {
+        Volume.setVol(_currentVol);
+        setState((){
+          timerIsRunning = false;
+        });
+      });
+    } else {
+      setState(() {
         timerIsRunning = false;
       });
-    });
+    }
+
+  }
+
+  Future<void> onInfo() async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: true, // user must tap button!
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Information'),
+          content: SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text("With this app you can mute your music by turning your head left or right. \nConnect your right (if you want to use a single earbud left) eSense earbud to your phone and click on start."),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            FlatButton(
+              child: Text('OK'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -297,6 +333,12 @@ class _MyHomePageState extends State<MyHomePage> {
         // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
         backgroundColor: Colors.indigo[900],
+        actions: <Widget>[
+          IconButton(
+            icon : Icon(Icons.info_outline),
+            onPressed: onInfo,
+          )
+        ],
       ),
       body: Center(
         // Center is a layout widget. It takes a single child and positions it
@@ -334,7 +376,6 @@ class _MyHomePageState extends State<MyHomePage> {
                     ),
                     Slider(
                       value: _thresholdValue,
-                      divisions: 4,
                       max: 4000,
                       min: 500,
                       onChanged: onThresholdChange,
@@ -355,11 +396,20 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             Spacer (
             ),
-            Icon(
-              timerIsRunning ? Icons.volume_off : Icons.volume_up,
-              color: bluetoothRunning ? (timerIsRunning ? Colors.blue[200] : Colors.blue) : Colors.grey[200],
-              size: 150.0,
-              key: Key("icon"),
+            Visibility(
+              child: CircularProgressIndicator(
+                value: null,
+                ),
+              visible: isConnection,
+            ),
+            Visibility(
+              child: Icon(
+                timerIsRunning ? Icons.volume_off : Icons.volume_up,
+                color: bluetoothRunning ? (timerIsRunning ? Colors.blue[200] : Colors.blue) : Colors.grey[200],
+                size: 150.0,
+                key: Key("icon"),
+              ),
+              visible: !isConnection,
             ),
             Spacer (
             ),
